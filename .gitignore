@@ -1,0 +1,9 @@
+build/
+*.o
+*.bin
+*.elf
+*.iso
+
+*.swp
+*.swo
+.vscode
