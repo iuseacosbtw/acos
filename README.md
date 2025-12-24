@@ -10,7 +10,7 @@ For anyone who wants to contribute:
 
 Add assembly functions in src/asm_funcs/bios.asm for now
 
-The bootloader (first 512) is all in boot.asm
+The bootloader (first 512 bytes) is all in boot.asm
 
 The loaded code is all in C. Note that the bootloader actually needs to load this code for it to run.
 
