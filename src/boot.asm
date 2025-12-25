@@ -47,5 +47,14 @@ dap:
 
 errmsg: db "Failed to load.",0x0A,0x0D,"Search for a BIOS ASCII table online and find this character: ",0
 
-times 510-($-$$) db 0
+; The MBR partition table is here. You typically don't need to touch this
+times 446-($-$$) db 0
+db 0x80
+db 0x01,0x01,0x00
+db 0x83
+db 0xFE,0xFF,0xFF
+dd 1
+dd 10
+
+times 48 db 0
 db 0x55,0xAA
