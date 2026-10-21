@@ -262,12 +262,12 @@ FILE** proc_getFiles(pid proc){
 	return processes[proc].files;
 }
 
-dword allocate(dword size){
+static dword find_free_memory(dword start,dword size){
 	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
 
 	dword count=0;
 	dword ret=0;
-	for(dword i=0;i<1<<17;i++){
+	for(dword i=start<<12;i<1<<17;i++){
 		if(pages[i]==0xFF){
 			count=0;
 			continue;
@@ -279,12 +279,8 @@ dword allocate(dword size){
 		}
 
 		for(byte j=0;j<8;j++){
-			if(count>=size){
-				bitmap_fill(pages,ret,i*8+j-1,1);
-				dword* s=(dword*)(ret*PAGE_SIZE);
-				for(dword t=0;t<size*PAGE_SIZE/sizeof(dword);t++) s[t]=0;
-				return (dword)s;
-			}
+			if(count>=size)
+				return ret*PAGE_SIZE;
 			if(pages[i]>>j&1) count=0;
 			else{
 				count++;
@@ -292,17 +288,40 @@ dword allocate(dword size){
 			}
 		}
 	}
-	panic("OUT OF MEMORY (file sync not implemented!) (OOM killer not implemented!)");
-	for(;;);
 	return 0;
+}
+dword allocate(dword size){
+	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
+	dword ret=find_free_memory(0,size*PAGE_SIZE);
+	if(!ret){
+		__asm__ volatile("cli":::);
+		panic("OUT OF MEMORY (file sync not implemented!) (OOM killer not implemented!)");
+		kinf_loop();
+	}
+	bitmap_fill(pages,ret/PAGE_SIZE,ret/PAGE_SIZE+(size+PAGE_SIZE-1)/-1,1);
+	dword* s=(dword*)(ret*PAGE_SIZE);
+	for(dword t=0;t<size*PAGE_SIZE/sizeof(dword);t++) s[t]=0;
+	return ret;
 }
 void free(dword ptr,dword size){
 	size=((size+PAGE_SIZE-1)/PAGE_SIZE);
-	//printf("\eCg;[]\eCf;");
-	//printd(ptr);
 	ptr>>=12;
 
 	bitmap_fill(pages,ptr,ptr+size-1,0);
+}
+dword reallocate(dword ptr,dword size,dword new_size){
+	size=((size+PAGE_SIZE-1)/PAGE_SIZE);
+	new_size=((new_size+PAGE_SIZE-1)/PAGE_SIZE);
+	if(size==new_size) return ptr;
+	dword ret;
+	ptr>>=12;
+
+	if(new_size<size){
+		bitmap_fill(pages,ptr+new_size,ptr+size-1,0);
+		return ptr<<12;
+	}else{
+
+	}
 }
 /*byte* allocate_prog(pid proc,dword size){
 	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
