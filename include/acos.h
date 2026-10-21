@@ -28,6 +28,7 @@ typedef dword pid;
 #define ETEMP 5
 // the function failed because a resource is temporarily unavailable
 // retrying it may work
+extern _Noreturn void kinf_loop(void);
 word getcursorpos(void);
 extern void setcursorpos(byte x,byte y);
 extern void printc(byte c);
@@ -51,9 +52,8 @@ extern void clear(void);
 extern void panic(char* str);
 extern void panic_prog(char SEG_GS* str);
 extern void scroll(dword lines);
-extern byte scancode_to_ascii(byte scancode);
-extern byte getchar(void);
-extern byte getscancode(void);
+extern byte getchar_noint(void);
+byte getchar(void);
 
 extern void settimer(word time);
 extern void beep_asm(word frequency);

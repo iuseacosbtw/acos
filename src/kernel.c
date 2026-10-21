@@ -628,7 +628,7 @@ void system_init(void){
 
 
 	char* options[2]={"No","Yes"};
-	if(kernel_prompt("Are you booting from a USB drive?",options,2))
+	if(kernel_prompt("Are you booting from a USB drive?",options,2)){
 		if(kernel_prompt("Would you like to overwrite your installation with the one on the USB drive?",options,2)){
 			clear();
 			*(word*)0x7DFE=0;
@@ -639,6 +639,7 @@ void system_init(void){
 				for(;;);
 			}
 		}
+	}
 
 
 	printf("Filesystem");
@@ -1104,23 +1105,25 @@ _Noreturn void exception_handler(byte type,dword addr,dword cs){
 					printc(' ');
 				printh(*i);
 			}
-			for(;;);
+			kinf_loop();
 		}
 	}else exit(addr);
 }
 
 extern byte G_Keyboard_KeyFlags;
-static volatile byte getchar_prog_flagsbuffer;
-static volatile byte getchar_prog_keybuffer;
-static volatile byte getchar_prog_id;
-byte getchar_prog(void){
-	byte id=getchar_prog_id;
-	while(id==getchar_prog_id) __asm__ volatile("hlt":::);
-	byte ret=getchar_prog_keybuffer;
+static volatile byte getchar_flagsbuffer;
+static volatile byte getchar_keybuffer;
+static volatile byte getchar_id;
+byte getchar(void){
+	byte id=getchar_id;
+	__asm__ volatile("sti":::);
+	while(id==getchar_id) __asm__ volatile("hlt":::);
+	__asm__ volatile("cli":::);
+	byte ret=getchar_keybuffer;
 
-	if(getchar_prog_flagsbuffer&1) // ctrl
-		ret&=0x3F;
-	if(getchar_prog_flagsbuffer&4) // alt
+	if(getchar_flagsbuffer&1) // ctrl
+		ret&=0x1F;
+	if(getchar_flagsbuffer&4) // alt
 		ret|=0x80;
 
 	return ret;
@@ -1155,9 +1158,9 @@ task_state* IRQ_handler(byte irq,task_state* state){
 		reload_gdt(&processes[current_pid].segments);
 		return &tasks[current_pid];
 	}else if(irq==0x21){
-		getchar_prog_keybuffer=getchar();
-		getchar_prog_flagsbuffer=G_Keyboard_KeyFlags;
-		getchar_prog_id++;
+		getchar_keybuffer=getchar_noint();
+		getchar_flagsbuffer=G_Keyboard_KeyFlags;
+		if(getchar_keybuffer) getchar_id++;
 	}
 	return state;
 }

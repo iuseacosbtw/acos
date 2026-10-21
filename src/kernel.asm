@@ -448,6 +448,20 @@ int_oshandler_buffer: times 4 dd 0
 ; kernel functions and global variables
 ; this is the literal kernel
 
+; ================ kinf_loop ================
+; An efficient infinite loop that uses
+; HLT to keep the computer quiet
+;
+; ARGS: void
+; OUTPUT: none (does not return)
+; CLOBBERS: none
+; ================ kinf_loop ================
+global kinf_loop
+kinf_loop:
+	CLI
+	HLT
+	JMP kinf_loop
+
 ; we no longer use stdcall here: arguments are pushed right-to-left and the calleR cleans up the stack.
 
 ; ================================ -PRINTING- ================================
@@ -1104,8 +1118,8 @@ scancode_to_ascii:
 ; OUTPUT: AL=AsciiCode
 ; CLOBBERS: AX
 ; ================ getchar ================
-global getchar
-getchar:
+global getchar_noint
+getchar_noint:
 	CALL getscancode
 	PUSH EAX
 	CALL scancode_to_ascii
@@ -1122,9 +1136,10 @@ getchar:
 ; ================ getscancode ================
 global getscancode
 getscancode_loop:
-	STI
-	HLT
-	CLI
+	;STI
+	;HLT
+	;CLI
+	; no longer works when interrupts are enabled
 getscancode:
 	IN AL,0x64 ; wait until input buffer is filled
 	TEST AL,1
@@ -1144,8 +1159,11 @@ getscancode:
 	JE getscancode_caps
 
 	TEST AL,0x80 ; make sure it's a key press, not a key release
-	JNZ getscancode
+	JNZ getscancode_null
 
+	RET
+	getscancode_null:
+	XOR AL,AL
 	RET
 
 	getscancode_ctrl:
@@ -1153,7 +1171,8 @@ getscancode:
 	XOR AL,00000001b
 	AND BYTE [G_Keyboard_KeyFlags],11111110b
 	OR [G_Keyboard_KeyFlags],AL
-	JMP getscancode
+	XOR AL,AL
+	JMP getscancode_null
 
 	getscancode_shift:
 	SHR AL,6
@@ -1161,7 +1180,8 @@ getscancode:
 	XOR AL,00000010b
 	AND BYTE [G_Keyboard_KeyFlags],11111101b
 	OR [G_Keyboard_KeyFlags],AL
-	JMP getscancode
+	XOR AL,AL
+	JMP getscancode_null
 
 	getscancode_alt:
 	SHR AL,5
@@ -1169,7 +1189,8 @@ getscancode:
 	XOR AL,00000100b
 	AND BYTE [G_Keyboard_KeyFlags],11111011b
 	OR [G_Keyboard_KeyFlags],AL
-	JMP getscancode
+	XOR AL,AL
+	JMP getscancode_null
 
 	getscancode_caps:
 	SHR AL,4
@@ -1177,7 +1198,7 @@ getscancode:
 	XOR AL,00001000b
 	XOR [G_Keyboard_KeyFlags],AL ; caps lock toggles unlike the other keys
 
-	getscancode_caps_wait: ; handle the LED lightt
+	getscancode_caps_wait: ; handle the LED light
 		IN AL,0x64
 		TEST AL,2
 		JNZ getscancode_caps_wait
@@ -1193,7 +1214,8 @@ getscancode:
 	SHR AL,1
 	OUT 0x60,AL
 
-	JMP getscancode
+	XOR AL,AL
+	JMP getscancode_null
 
 
 ; ================================ -HARD DISK- ================================
