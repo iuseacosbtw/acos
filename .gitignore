@@ -1,2 +1,5 @@
 build/
 utility/build
+compile_commands.json
+utility/compile_commands.json
+windows.ps1
