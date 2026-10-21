@@ -1,0 +1,1 @@
+Please make sure to compile utils.c with the '-m32' flag, as it basically uses the ACOS file drivers directly, and ACOS assumes a 32-bit environment.
