@@ -1025,6 +1025,7 @@ scroll:
 
 ; ================================ -KEYBOARD- ================================
 
+global G_Keyboard_KeyFlags
 G_Keyboard_KeyFlags: db 00000000b ; b0=ctrl 1D, b1=shift 2A, b2=alt 38, b3=caps 3A
 G_Keyboard_Scancodes: ; the list of scancodes for the scancode_to_ascii function
 	db 0x00, 0x1B, '1', '2', '3', '4', '5', '6'
