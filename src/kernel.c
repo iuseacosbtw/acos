@@ -292,7 +292,7 @@ static dword find_free_memory(dword start,dword size){
 }
 dword allocate(dword size){
 	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
-	dword ret=find_free_memory(0,size*PAGE_SIZE);
+	dword ret=find_free_memory(kernel_finish,size*PAGE_SIZE);
 	if(!ret){
 		__asm__ volatile("cli":::);
 		panic("OUT OF MEMORY (file sync not implemented!) (OOM killer not implemented!)");
@@ -320,7 +320,14 @@ dword reallocate(dword ptr,dword size,dword new_size){
 		bitmap_fill(pages,ptr+new_size,ptr+size-1,0);
 		return ptr<<12;
 	}else{
-
+		if(find_free_memory((ptr+size)*PAGE_SIZE,(new_size-size)*PAGE_SIZE)){
+			bitmap_fill(pages,ptr+size,ptr+new_size-1,1);
+			return ptr<<12;
+		}
+		byte* allocation=(byte*)allocate(new_size*PAGE_SIZE);
+		for(dword i=0;i<size*PAGE_SIZE;i++)
+			allocation[i]=((byte*)ptr)[i];
+		return (dword)allocation;
 	}
 }
 /*byte* allocate_prog(pid proc,dword size){
