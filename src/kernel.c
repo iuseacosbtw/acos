@@ -215,11 +215,15 @@ extern void reload_gdt(proc_gdt* task_state_gdt);
 
 #define STACK_SIZE 65536
 #define TASK_LIMIT 256
-pid current_pid=0;
-static pid foreground_pid=1;
+pid current_pid;
+static pid foreground_pid;
 static task_state tasks[TASK_LIMIT]={};
 static process processes[TASK_LIMIT]={};
-static byte pages[1<<17];
+
+static const dword alloc_map_startoff[2]={kernel_finish,0x80000000-kernel_finish};
+static dword* alloc_map;
+static dword alloc_map_size;
+static byte alloc_moving;
 
 
 #define GDT_ENTRY_ACCESS_USEREXEC 0b11111010
@@ -262,77 +266,123 @@ FILE** proc_getFiles(pid proc){
 	return processes[proc].files;
 }
 
-static dword find_free_memory(dword start,dword size){
-	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
-
-	dword count=0;
-	dword ret=0;
-	for(dword i=start<<12;i<1<<17;i++){
-		if(pages[i]==0xFF){
-			count=0;
-			continue;
-		}
-		if(pages[i]==0&&count+8<=size){
-			count+=8;
-			ret=(!ret)?i*8:ret;
-			continue;
-		}
-
-		for(byte j=0;j<8;j++){
-			if(count>=size)
-				return ret*PAGE_SIZE;
-			if(pages[i]>>j&1) count=0;
-			else{
-				count++;
-				ret=(!ret)?i*8+j:ret;
-			}
-		}
-	}
-	return 0;
-}
 dword allocate(dword size){
-	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
-	dword ret=find_free_memory(kernel_finish,size*PAGE_SIZE);
-	if(!ret){
-		__asm__ volatile("cli":::);
-		panic("OUT OF MEMORY (file sync not implemented!) (OOM killer not implemented!)");
-		kinf_loop();
+	dword max_size=0;
+	for(dword i=1;i<alloc_map_size;i+=2){
+		if(alloc_map[i]>=size){
+			i--;
+			byte* ret=(byte*)alloc_map[i];
+			alloc_map[i]+=size;
+			alloc_map[i+1]-=size;
+			for(dword i=0;i<size;i++)
+				ret[i]=0;
+			return (dword)ret;
+		}
+		if(alloc_map[i]>max_size)
+			max_size=alloc_map[i];
 	}
-	bitmap_fill(pages,ret/PAGE_SIZE,ret/PAGE_SIZE+(size+PAGE_SIZE-1)/-1,1);
-	dword* s=(dword*)(ret*PAGE_SIZE);
-	for(dword t=0;t<size*PAGE_SIZE/sizeof(dword);t++) s[t]=0;
-	return ret;
-}
-void free(dword ptr,dword size){
-	size=((size+PAGE_SIZE-1)/PAGE_SIZE);
-	ptr>>=12;
-
-	bitmap_fill(pages,ptr,ptr+size-1,0);
+	__asm__ volatile("cli":::);
+	printf("OUT OF MEMORY\nLargest contiguous region: ");
+	printd(max_size);
+	printf(", requested size: ");
+	printd(size);
+	kinf_loop();
 }
 dword reallocate(dword ptr,dword size,dword new_size){
-	size=((size+PAGE_SIZE-1)/PAGE_SIZE);
-	new_size=((new_size+PAGE_SIZE-1)/PAGE_SIZE);
 	if(size==new_size) return ptr;
 	dword ret;
-	ptr>>=12;
 
 	if(new_size<size){
-		bitmap_fill(pages,ptr+new_size,ptr+size-1,0);
-		return ptr<<12;
+		free(ptr+size,new_size-size);
+		return ptr;
 	}else{
-		if(find_free_memory((ptr+size)*PAGE_SIZE,(new_size-size)*PAGE_SIZE)){
-			bitmap_fill(pages,ptr+size,ptr+new_size-1,1);
-			return ptr<<12;
+		byte* allocation=0;
+		dword allo_index;
+		for(dword i=0;i<alloc_map_size;i+=2){
+			dword astart=alloc_map[i];
+			dword asize=alloc_map[i+1];
+
+			if(ptr+size==astart){ // free region is directly after
+				if(asize>=new_size-size){ // there is enough space to grow in place
+					for(dword j=size;j<new_size;j++)
+						((byte*)astart)[j]=0;
+					alloc_map[i]+=new_size-size;
+					alloc_map[i+1]-=new_size-size;
+					return ptr;
+				}
+			}
+			if(asize>=new_size){
+				allocation=(byte*)astart;
+				allo_index=i;
+			}
 		}
-		byte* allocation=(byte*)allocate(new_size*PAGE_SIZE);
-		for(dword i=0;i<size*PAGE_SIZE;i++)
-			allocation[i]=((byte*)ptr)[i];
-		return (dword)allocation;
+		// there was not enough space to grow in place
+		if(allocation){
+			dword i=0;
+			alloc_map[allo_index]+=new_size;
+			alloc_map[allo_index+1]-=new_size;
+			for(;i<size;i++)
+				allocation[i]=((byte*)ptr)[i];
+			for(;i<new_size;i++)
+				allocation[i]=0;
+			if(alloc_moving){
+				alloc_map_size+=4;
+				alloc_moving=0;
+				alloc_map=(dword*)allocation;
+			}
+			free(ptr,size);
+			return (dword)allocation;
+		}else{
+			__asm__ volatile("cli":::);
+			panic("OUT OF MEMORY!!!");
+			kinf_loop();
+		}
 	}
 }
+void free(dword ptr,dword size){
+	dword lazy_addr;
+	byte lazy=0;
+	dword i=0;
+	for(;i<alloc_map_size;i+=2){
+		dword astart=alloc_map[i];
+		dword asize=alloc_map[i+1];
+
+		if(astart+asize==ptr){ // free region is directly before
+			alloc_map[i+1]+=size;
+			return;
+		}else if(ptr+size==astart){ // free region is directly after
+			alloc_map[i]-=size;
+			alloc_map[i+1]+=size;
+			return;
+		}else if(!lazy&&asize==0){
+			lazy=1;
+			lazy_addr=i;
+		}
+	}
+	if(lazy){
+		alloc_map[lazy_addr]=ptr;
+		alloc_map[lazy_addr+1]=size;
+		return;
+	}
+	// we have to make a new ptr, using reallocate
+	alloc_moving=1;
+	reallocate((dword)alloc_map,alloc_map_size*sizeof(dword),(alloc_map_size+4)*sizeof(dword));
+	if(alloc_moving){
+		alloc_map_size+=4;
+		alloc_moving=0;
+	}
+	i+=2;
+	alloc_map[i]=ptr;
+	alloc_map[i+1]=size;
+}
+
 /*byte* allocate_prog(pid proc,dword size){
 	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
-	byte* ret=(byte*)allocate(size*PAGE_SIZE);
+	dword gdt_start;
+	dword gdt_size;
+	byte gdt_type;
+	extract_gdt_entry(processes[proc].segments.data,&gdt_start,&gdt_size,&gdt_type);
+	byte* ret=(byte*)reallocate(gdt_start,gdt_size*PAGE_SIZE,(gdt_size+size)*PAGE_SIZE);
 
 	dword proc_size=((dword)(processes[proc].segments.data.flags&0x0F)<<16)|processes[proc].segments.data.lim_low;
 	proc_size+=size;
@@ -669,7 +719,9 @@ void system_init(void){
 
 
 	printf("Filesystem");
-	if(file_init()){
+	byte in=file_init();
+	printd(in);
+	if(in){
 		printf(" [\eCQqrg;ACTION REQUIRED\eCF;]\n\n\eCrgb;This computer appears to not have an ACOS filesystem!\nYou have a few options:\n");
 		byte selection=0;
 		while(selection<0x80){
@@ -989,15 +1041,28 @@ extern char _linker_bss_end[];
 task_state* kmain(void){
 	for(char* i=_linker_bss_start+0x4000;i<_linker_bss_end;i++) *i=0;
 	// we do 0x4000 here because that's the size of the kernel's stack
+	current_pid=0;
+	foreground_pid=1;
+	alloc_map=(dword*)alloc_map_startoff;
+	alloc_map_size=2;
+	alloc_moving=0;
 	settimer(1193180/SCHEDULER_FREQUENCY);
 
-	printf("Memory");
-	{
-		dword i=0;
-		for(;i<kernel_finish>>15;i++) pages[i]=0xFF;
-		for(;i<1<<17;i++) pages[i]=0;
-	}
-	printf(" [\eCqg;OK\eCf;]\n");
+	//printf("Memory");
+	//printf(" [\eCqg;OK\eCf;]\n");
+
+	/*printd(allocate(16));
+	printc(' ');
+	free(0x300000,1);
+	free(0x300002,1);
+	free(0x300004,1);
+	free(0x300006,1);
+	printd((dword)alloc_map);
+	printc(' ');
+	printn(alloc_map_size);
+	kinf_loop();*/
+
+
 	tasks[0].active=1;
 	processes[0].files=(FILE**)allocate(FILE_ARRAY_SIZE);
 
@@ -1006,6 +1071,10 @@ task_state* kmain(void){
 	reload_gdt(&processes[current_pid].segments);
 	return &tasks[current_pid];*/
 	system_init();
+	printf("\eCqgb;System initialization completed with no errors.");
+	emergency_shell();
+	printf("\eCqgb;\nEmergency shell has exited.");
+	kinf_loop();
 
 	FILE* root_file=get_root_pointer();
 	FILE* init_file=get_directory_entry_from_name(root_file,"init.ace");

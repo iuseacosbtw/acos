@@ -70,7 +70,10 @@ static byte cache_file(FILE* file){
 
 	file_header header=get_file_header(file);
 	dword size=sizeof(file_header)+header.size;
+	printf("\eCqrg;A");
+	printd(size);
 	byte* buffer=(byte*)allocate(size);
+	printf("\eCF;B");
 
 	if(ahci_read(file->addr,size,buffer)){
 		file->addr=(dword)buffer;
@@ -1029,9 +1032,8 @@ byte file_init(void){
 
 	root=*(dword*)buffer;
 	char* sig=FILESYSTEM_SIGNATURE;
-	for(byte i=0;i<8;i++){
+	for(byte i=0;i<8;i++)
 		if(sig[i]!=buffer[i+4]) return 1;
-	}
 
 	FILE* root_ptr=get_root_pointer();
 	allocsys=get_directory_entry_from_name(root_ptr,"alloc.sys");
