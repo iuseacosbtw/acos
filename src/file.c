@@ -20,7 +20,6 @@ FILE dwtofile(dword dw){
 }
 
 extern dword kernel_finish;
-file_header get_file_header(FILE* file);
 static byte ptrValid(FILE* file){
 	if(!(
 		file>=fileList&&
@@ -68,12 +67,8 @@ static byte cache_file(FILE* file){
 	if(!ptrValid(file)) return 0;
 	if(file->flags&1) return 1;
 
-	file_header header=get_file_header(file);
-	dword size=sizeof(file_header)+header.size;
-	printf("\eCqrg;A");
-	printd(size);
+	dword size=sizeof(file_header)+get_file_header(file).size;
 	byte* buffer=(byte*)allocate(size);
-	printf("\eCF;B");
 
 	if(ahci_read(file->addr,size,buffer)){
 		file->addr=(dword)buffer;

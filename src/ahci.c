@@ -129,7 +129,7 @@ dword ahci_init(void){
 	return 0;
 }
 
-byte ahci_read_prog(dword addr,dword size,byte SEG_GS* buffer){
+byte ahci_read_prog(dword addr,dword size,void SEG_GS* buffer){
 	fis_h2d* fis=(fis_h2d*)AHCI_COMMAND_TABLE;
 	fis->type=FIS_TYPE_H2D;
 	fis->flags=0x80;
@@ -151,7 +151,7 @@ byte ahci_read_prog(dword addr,dword size,byte SEG_GS* buffer){
 	fis->counth=sectors>>8;
 
 	prdt_entry* prdt=(prdt_entry*)(AHCI_COMMAND_TABLE+0x80);
-	dword allocation=allocate(sectors*512);
+	dword allocation=allocate_aligned(sectors*512,4096);
 	if(!allocation) return 0;
 	prdt->dba=allocation;
 	prdt->dbc_i=sectors*512-1;
@@ -167,11 +167,11 @@ byte ahci_read_prog(dword addr,dword size,byte SEG_GS* buffer){
 
 	// read succeeded, now write to the buffer
 	byte* src=(byte*)allocation+offset;
-	for(dword i=0;i<size;i++) buffer[i]=src[i];
+	for(dword i=0;i<size;i++) ((byte SEG_GS*)buffer)[i]=src[i];
 	free(allocation,sectors*512);
 	return 1;
 }
-byte ahci_read(dword addr,dword size,byte* buffer){
+byte ahci_read(dword addr,dword size,void* buffer){
 	fis_h2d* fis=(fis_h2d*)AHCI_COMMAND_TABLE;
 	fis->type=FIS_TYPE_H2D;
 	fis->flags=0x80;
@@ -193,7 +193,7 @@ byte ahci_read(dword addr,dword size,byte* buffer){
 	fis->counth=sectors>>8;
 
 	prdt_entry* prdt=(prdt_entry*)(AHCI_COMMAND_TABLE+0x80);
-	dword allocation=allocate(sectors*512);
+	dword allocation=allocate_aligned(sectors*512,4096);
 	if(!allocation) return 0;
 	prdt->dba=allocation;
 	prdt->dbc_i=sectors*512-1;
@@ -209,24 +209,24 @@ byte ahci_read(dword addr,dword size,byte* buffer){
 
 	// read succeeded, now write to the buffer
 	byte* src=(byte*)allocation+offset;
-	for(dword i=0;i<size;i++) buffer[i]=src[i];
+	for(dword i=0;i<size;i++) ((byte*)buffer)[i]=src[i];
 	free(allocation,sectors*512);
 	return 1;
 }
 
 
 
-byte ahci_write(dword addr,dword size,byte* buffer){
+byte ahci_write(dword addr,dword size,void* buffer){
 	dword offset=addr%512;
 	dword sector=addr/512;
 	dword sectors=(offset+size+511)/512; // cieling division
 
-	byte* allocation=(byte*)allocate(sectors*512);
+	byte* allocation=(byte*)allocate_aligned(sectors*512,4096);
 	if(!allocation) return 0;
 
 	ahci_read(sector*512,sectors*512,allocation);
 	byte* des=allocation+offset;
-	for(dword i=0;i<size;i++) des[i]=buffer[i];
+	for(dword i=0;i<size;i++) des[i]=((byte*)buffer)[i];
 
 
 

@@ -63,13 +63,15 @@ extern byte cmpstr(char* str1,char* str2);
 extern byte cmpstr_prog(char SEG_GS* str1,char SEG_GS* str2);
 
 dword ahci_init(void);
-byte ahci_read_prog(dword addr,dword size,byte SEG_GS* buffer);
-byte ahci_read(dword addr,dword size,byte* buffer);
-byte ahci_write(dword addr,dword size,byte* buffer);
+byte ahci_read_prog(dword addr,dword size,void SEG_GS* buffer);
+byte ahci_read(dword addr,dword size,void* buffer);
+byte ahci_write(dword addr,dword size,void* buffer);
 
 void printf(char* str);
 void printf_prog(char SEG_GS* str);
 dword allocate(dword size);
+dword allocate_aligned(dword size,word alignment);
+dword reallocate(dword ptr,dword size,dword new_size);
 void free(dword ptr,dword size);
 byte proc_getFlags(pid proc);
 

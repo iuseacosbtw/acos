@@ -220,7 +220,6 @@ static pid foreground_pid;
 static task_state tasks[TASK_LIMIT]={};
 static process processes[TASK_LIMIT]={};
 
-static const dword alloc_map_startoff[2]={kernel_finish,0x80000000-kernel_finish};
 static dword* alloc_map;
 static dword alloc_map_size;
 static byte alloc_moving;
@@ -266,6 +265,32 @@ FILE** proc_getFiles(pid proc){
 	return processes[proc].files;
 }
 
+dword allocate_aligned(dword size,word alignment){
+	if(alignment<2)
+		return allocate(size); // avoid division by zero and unecessary 1-byte alignment
+	dword al=alignment;
+	dword max_size=0;
+	for(dword i=0;i<alloc_map_size;i+=2){
+		dword offset=al*(alloc_map[i]/al+1)-alloc_map[i];
+		if(alloc_map[i+1]-offset>=size){
+			byte* ret=(byte*)alloc_map[i];
+			alloc_map[i]+=size+offset;
+			alloc_map[i+1]-=size+offset;
+			for(dword i=offset;i<size+offset;i++)
+				ret[i]=0;
+			free((dword)ret,offset);
+			return (dword)ret+offset;
+		}
+		if(alloc_map[i]>max_size)
+			max_size=alloc_map[i];
+	}
+	__asm__ volatile("cli":::);
+	printf("OUT OF MEMORY\nLargest contiguous region: ");
+	printd(max_size);
+	printf(", requested size: ");
+	printd(size);
+	kinf_loop();
+}
 dword allocate(dword size){
 	dword max_size=0;
 	for(dword i=1;i<alloc_map_size;i+=2){
@@ -293,7 +318,7 @@ dword reallocate(dword ptr,dword size,dword new_size){
 	dword ret;
 
 	if(new_size<size){
-		free(ptr+size,new_size-size);
+		free(ptr+new_size,size-new_size);
 		return ptr;
 	}else{
 		byte* allocation=0;
@@ -304,7 +329,7 @@ dword reallocate(dword ptr,dword size,dword new_size){
 
 			if(ptr+size==astart){ // free region is directly after
 				if(asize>=new_size-size){ // there is enough space to grow in place
-					for(dword j=size;j<new_size;j++)
+					for(dword j=0;j<new_size-size;j++)
 						((byte*)astart)[j]=0;
 					alloc_map[i]+=new_size-size;
 					alloc_map[i+1]-=new_size-size;
@@ -707,7 +732,6 @@ void system_init(void){
 	if(kernel_prompt("Are you booting from a USB drive?",options,2)){
 		if(kernel_prompt("Would you like to overwrite your installation with the one on the USB drive?",options,2)){
 			clear();
-			*(word*)0x7DFE=0;
 			if(ahci_write(0,0x14000,(byte*)0x7C00))
 				printf("\eCqg;The write was successful!\n");
 			else{
@@ -800,11 +824,11 @@ task_state* emergency_shell(void){
 			printc(c);
 			for(p=0;p<128;p++) input[p]=(input[p]==' ')?0:input[p];
 			p=0;
-			while(input[p]!=0) p++;
-			while(input[p]==0) p++;
+			while(p<128&&input[p]!=0) p++;
+			while(p<128&&input[p]==0) p++;
 			dword p2=p;
-			while(input[p2]!=0) p2++;
-			while(input[p2]==0) p2++;
+			while(p2<128&&input[p2]!=0) p2++;
+			while(p2<128&&input[p2]==0) p2++;
 
 			if(cmpstr(input,"ls")){
 				printf("There are ");
@@ -1041,28 +1065,25 @@ extern char _linker_bss_end[];
 task_state* kmain(void){
 	for(char* i=_linker_bss_start+0x4000;i<_linker_bss_end;i++) *i=0;
 	// we do 0x4000 here because that's the size of the kernel's stack
+	printf("Memory");
 	current_pid=0;
 	foreground_pid=1;
-	alloc_map=(dword*)alloc_map_startoff;
-	alloc_map_size=2;
-	alloc_moving=0;
+	{
+		dword alloc_map_startoff[2]={kernel_finish,0x80000000-kernel_finish};
+		alloc_map=(dword*)alloc_map_startoff;
+		alloc_map_size=2;
+		alloc_moving=0;
+		free(0,0); // move the allocation table out of kernel memory
+		for(dword i=0;i<alloc_map_size;i+=2){
+			if(alloc_map[i]==(dword)alloc_map_startoff){
+				alloc_map[i+1]=0;
+				break;
+			}
+		}
+	}
 	settimer(1193180/SCHEDULER_FREQUENCY);
 
-	//printf("Memory");
-	//printf(" [\eCqg;OK\eCf;]\n");
-
-	/*printd(allocate(16));
-	printc(' ');
-	free(0x300000,1);
-	free(0x300002,1);
-	free(0x300004,1);
-	free(0x300006,1);
-	printd((dword)alloc_map);
-	printc(' ');
-	printn(alloc_map_size);
-	kinf_loop();*/
-
-
+	printf(" [\eCqg;OK\eCf;]\n");
 	tasks[0].active=1;
 	processes[0].files=(FILE**)allocate(FILE_ARRAY_SIZE);
 
@@ -1071,10 +1092,6 @@ task_state* kmain(void){
 	reload_gdt(&processes[current_pid].segments);
 	return &tasks[current_pid];*/
 	system_init();
-	printf("\eCqgb;System initialization completed with no errors.");
-	emergency_shell();
-	printf("\eCqgb;\nEmergency shell has exited.");
-	kinf_loop();
 
 	FILE* root_file=get_root_pointer();
 	FILE* init_file=get_directory_entry_from_name(root_file,"init.ace");
@@ -1202,7 +1219,7 @@ _Noreturn void exception_handler(byte type,dword addr,dword cs){
 			}
 			kinf_loop();
 		}
-	}else exit(addr);
+	}else exit(-type);
 }
 
 extern byte G_Keyboard_KeyFlags;

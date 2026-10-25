@@ -108,6 +108,7 @@ static ACOS_FILE* allocsys;
 static dword current_pid=0;
 
 static FILE* disk=NULL;
+static byte* memory=NULL;
 
 
 byte ahci_read(dword addr, dword size, byte *buffer){
@@ -120,11 +121,125 @@ byte ahci_write(dword addr, dword size, byte *buffer){
 	fwrite(buffer,sizeof(char),size,disk);
 	return 1;
 }
-dword allocate(dword size){
+/*dword allocate(dword size){
 	return (dword)calloc(size,sizeof(char));
 }
 void acos_free(dword ptr,dword size){
 	free((char*)ptr);
+}*/
+#define STACK_SIZE 65536
+#define TASK_LIMIT 256
+
+static dword alloc_map_startoff[2]={0x300000,0x80000000-0x300000};
+static dword* alloc_map=alloc_map_startoff;
+static dword alloc_map_size=2;
+static byte alloc_moving=0;
+dword allocate(dword size){
+	dword max_size=0;
+	for(dword i=1;i<alloc_map_size;i+=2){
+		if(alloc_map[i]>=size){
+			i--;
+			byte* ret=(byte*)alloc_map[i];
+			alloc_map[i]+=size;
+			alloc_map[i+1]-=size;
+			for(dword i=0;i<size;i++)
+				ret[i]=0;
+			return (dword)ret;
+		}
+		if(alloc_map[i]>max_size)
+			max_size=alloc_map[i];
+	}
+	__asm__ volatile("cli":::);
+	printf("OUT OF MEMORY");
+	for(;;);
+}
+void acos_free(dword ptr,dword size);
+dword reallocate(dword ptr,dword size,dword new_size){
+	if(size==new_size) return ptr;
+	dword ret;
+
+	if(new_size<size){
+		acos_free(ptr+new_size,size-new_size);
+		return ptr;
+	}else{
+		byte* allocation=0;
+		dword allo_index;
+		for(dword i=0;i<alloc_map_size;i+=2){
+			dword astart=alloc_map[i];
+			dword asize=alloc_map[i+1];
+
+			if(ptr+size==astart){ // free region is directly after
+				if(asize>=new_size-size){ // there is enough space to grow in place
+					for(dword j=0;j<new_size-size;j++)
+						((byte*)astart)[j]=0;
+					alloc_map[i]+=new_size-size;
+					alloc_map[i+1]-=new_size-size;
+					return ptr;
+				}
+			}
+			if(asize>=new_size){
+				allocation=(byte*)astart;
+				allo_index=i;
+			}
+		}
+		// there was not enough space to grow in place
+		if(allocation){
+			dword i=0;
+			alloc_map[allo_index]+=new_size;
+			alloc_map[allo_index+1]-=new_size;
+			for(;i<size;i++)
+				allocation[i]=((byte*)ptr)[i];
+			for(;i<new_size;i++)
+				allocation[i]=0;
+			if(alloc_moving){
+				alloc_map_size+=4;
+				alloc_moving=0;
+				alloc_map=(dword*)allocation;
+			}
+			acos_free(ptr,size);
+			return (dword)allocation;
+		}else{
+			__asm__ volatile("cli":::);
+			printf("OUT OF MEMORY!!!");
+			for(;;);
+		}
+	}
+}
+void acos_free(dword ptr,dword size){
+	dword lazy_addr;
+	byte lazy=0;
+	dword i=0;
+	for(;i<alloc_map_size;i+=2){
+		dword astart=alloc_map[i];
+		dword asize=alloc_map[i+1];
+
+		if(astart+asize==ptr){ // free region is directly before
+			alloc_map[i+1]+=size;
+			return;
+		}else if(ptr+size==astart){ // free region is directly after
+			alloc_map[i]-=size;
+			alloc_map[i+1]+=size;
+			return;
+		}else if(!lazy&&asize==0){
+			lazy=1;
+			lazy_addr=i;
+		}
+	}
+	if(lazy){
+		alloc_map[lazy_addr]=ptr;
+		alloc_map[lazy_addr+1]=size;
+		return;
+	}
+	// we have to make a new ptr, using reallocate
+	alloc_moving=1;
+	reallocate((dword)alloc_map,alloc_map_size*sizeof(dword),(alloc_map_size+4)*sizeof(dword));
+	if(alloc_moving){
+		alloc_map_size+=4;
+		alloc_moving=0;
+	}
+	i+=2;
+	alloc_map[i]=ptr;
+	alloc_map[i+1]=size;
 }
 
 
@@ -140,7 +255,7 @@ ACOS_FILE dwtofile(dword dw){
 	return file;
 }
 
-file_header get_file_header(ACOS_FILE* file);
+static const dword kernel_finish=0x300000;
 static byte ptrValid(ACOS_FILE* file){
 	if(!(
 		file>=fileList&&
@@ -149,13 +264,24 @@ static byte ptrValid(ACOS_FILE* file){
 		file->addr
 	)) return 0;
 	if(file->flags&1)
-		return (file->addr>=(1<<16)&&((file_header*)file->addr)->file_addr>0x200);
+		return (file->addr>=kernel_finish&&((file_header*)file->addr)->file_addr>0x200);
 	else{
 		dword buffer=0;
 		ahci_read(file->addr+offsetof(file_header,file_addr),sizeof(dword),(byte*)(&buffer));
 		return (buffer>0x200);
 	}
 }
+/*static byte ptrExists(ACOS_FILE file){
+	for(dword i=0;i<MAX_ACOS_FILEPTRS;i++)
+		if(fileList[i].flags&1){
+			if(((file_header*)(fileList[i].addr))->file_addr==file.addr)
+				return 1;
+		}else{
+			if(fileList[i].addr==file.addr)
+				return 1;
+		}
+	return 0;
+}*/
 
 byte file_permission(byte req,ACOS_FILE* file){
 	return 1;
@@ -164,17 +290,21 @@ byte file_permission(byte req,ACOS_FILE* file){
 static byte cache_file(ACOS_FILE* file){
 	if(!ptrValid(file)) return 0;
 	if(file->flags&1) return 1;
+	//printf("\eCb;C\eCf;");
 
-	file_header header=get_file_header(file);
-	dword size=sizeof(file_header)+header.size;
+	dword size=sizeof(file_header)+get_file_header(file).size;
+	if(size>0x100000) for(;;);
 	byte* buffer=(byte*)allocate(size);
 
-	ahci_read(file->addr,size,buffer);
 	if(ahci_read(file->addr,size,buffer)){
 		file->addr=(dword)buffer;
 		file->flags|=1;
+		//printf("\eCqb;C\eCf;");
 		return 1;
-	}else return 0;
+	}else{
+		//printf("\eCqb;C\eCf;");
+		return 0;
+	}
 }
 static byte uncache_file(ACOS_FILE* file){
 	if(!ptrValid(file)) return 0;
@@ -205,6 +335,67 @@ dword cleanup_files(void){
 		}
 	}
 	return creationLocation;
+}
+ACOS_FILE** proc_getFiles(pid proc){
+	return NULL;
+}
+static fdesc add_ptr(ACOS_FILE* file){
+	ACOS_FILE** files=proc_getFiles(current_pid);
+	dword creationLocation;
+	byte spaceFound=0;
+	for(fdesc i=1;i<ACOS_FILE_ARRAY_SIZE;i++){
+		if(!spaceFound&&!ptrValid(files[i])){
+			spaceFound=1;
+			creationLocation=i;
+		}else{
+			if(files[i]==file){
+				file->count++;
+				return i;
+			}
+		}
+	}
+
+
+	if(spaceFound){
+		files[creationLocation]=file;
+		file->count++;
+		return creationLocation;
+	}
+
+	return 0;
+}
+static fdesc get_desc(pid proc,ACOS_FILE file){
+	dword creationLocation;
+	byte spaceFound=0;
+	for(dword i=1;i<MAX_ACOS_FILEPTRS;i++){ //i=1 here because of 'return 0;' at the end
+		if(!spaceFound&&!fileList[i].addr){
+			spaceFound=1;
+			creationLocation=i;
+		}else{
+			if(fileList[i].flags&1){
+				if(((file_header*)(fileList[i].addr))->file_addr==file.addr)
+					return add_ptr(fileList+i);
+			}else{
+				if(fileList[i].addr==file.addr)
+					return add_ptr(fileList+i);
+			}
+		}
+	}
+
+
+	if(spaceFound||cleanup_files()!=0xFFFFFFFF){
+		fileList[creationLocation].addr=file.addr;
+		fileList[creationLocation].count=0;
+		fileList[creationLocation].flags=0;
+
+		if(!(get_file_header(fileList+creationLocation).flags&0b00100000))
+			cache_file(fileList+creationLocation);
+
+
+		return add_ptr(fileList+creationLocation);
+	}
+
+	return 0;
 }
 static ACOS_FILE* get_pointer(ACOS_FILE file){
 	dword creationLocation;
@@ -243,6 +434,16 @@ static ACOS_FILE* get_pointer(ACOS_FILE file){
 
 	return (ACOS_FILE*)0;
 }
+byte fclose_desc(pid proc,fdesc desc){
+	ACOS_FILE** files=proc_getFiles(proc);
+	if(!ptrValid(files[desc])) return 0;
+	if(files[desc]->count==0) return 0;
+
+	files[desc]->count--;
+	files[desc]=(ACOS_FILE*)0;
+
+	return 1;
+}
 byte fclose_ptr(ACOS_FILE* ptr){
 	if(!ptrValid(ptr)) return 0;
 	if(ptr->count==0) return 0;
@@ -263,10 +464,15 @@ file_header get_file_header(ACOS_FILE* file){
 	file_header ret={};
 	if(!ptrValid(file)) return ret;
 
-	if(file->flags&1)
+	if(file->flags&1){
+		//printf("\eCr;M\eCf;");
 		ret=*(file_header*)(file->addr); // read from cache
-	else
+		//printf("\eCgb;M\eCf;");
+	}else{
+		//printf("\eCg;D\eCf;");
 		ahci_read(file->addr,sizeof(file_header),(byte*)(&ret)); // read from disk instead
+		//printf("\eCrb;D\eCf;");
+	}
 
 	return ret;
 }
@@ -408,10 +614,58 @@ byte get_file_name(ACOS_FILE* file,byte* buffer){
 	return ret;
 }
 
+/*ACOS_FILE* resolve_path(char* str){
+	if(*str!='/') return (ACOS_FILE*)0;
+	dword size=0;
+	for(;str[size]!=0;size++);
+	byte buffer[size+1]={};
+
+	ACOS_FILE preFile=dwtofile(root);
+	byte preExists=ptrExists(preFile);
+	ACOS_FILE* currentDir=get_pointer(preFile);
+
+	dword p=0;
+	str++;
+	for(;*str!=0;str++){
+		if(*str!='/') buffer[p++]=*str;
+		if(*str=='/'||*(str+1)==0){
+			ACOS_FILE file=get_directory_entry_from_nameRaw(currentDir,(char*)buffer);
+			if(!file.addr) return (ACOS_FILE*)0;
+			if(!preExists){
+				close_file(currentDir);
+			}
+
+			preExists=ptrExists(file);
+			ACOS_FILE* currentDir=get_pointer(file);
+
+			file_header header=get_file_header(currentDir);
+			byte flags=header.flags>>6;
+			if(flags==0x00){
+				if(*(str+1)!=0){
+					if(!preExists) close_file(currentDir);
+					return (ACOS_FILE*)0;
+				}else return currentDir;
+			}else if(flags==0x01){
+				if(header.size==0){
+					if(!preExists) close_file(currentDir);
+					return (ACOS_FILE*)0;
+				}
+			}else return (ACOS_FILE*)0;
+
+			while(p!=0) buffer[--p]=0;
+		}
+	}
+	return (ACOS_FILE*)0;
+}*/
 
 ACOS_FILE* get_file_parent(ACOS_FILE* file){
 	if(ptrValid(file))
 		return get_pointer(dwtofile(get_file_header(file).parent_addr));
+	return 0;
+}
+byte get_file_flags(ACOS_FILE* file){
+	if(ptrValid(file))
+		return get_file_header(file).flags;
 	return 0;
 }
 byte get_file_type(ACOS_FILE* file){
@@ -693,7 +947,7 @@ char rename_file(ACOS_FILE* file,char* name){
 	if(!file_permission(F_PERM_WRITE,file)) return 0;
 	//if(file==allocsys) return 0;
 	// renaming alloc.sys can be catastrophic IF the user doesn't know what they're doing
-	// I chose to trust the user here
+	// However, I chose to trust the user here, since renaming it might be an attempt at recovery
 
 	file_header header=get_file_header(file);
 	if(header.file_addr==root) return 0; // renaming the root breaks the assumption of its entry being the first one. do not remove this.
@@ -798,15 +1052,11 @@ byte file_init(void){
 
 	root=*(dword*)buffer;
 	char* sig=FILESYSTEM_SIGNATURE;
-	for(byte i=0;i<8;i++){
+	for(byte i=0;i<8;i++)
 		if(sig[i]!=buffer[i+4]) return 1;
-	}
 
 	ACOS_FILE* root_ptr=get_root_pointer();
 	allocsys=get_directory_entry_from_name(root_ptr,"alloc.sys");
-	if(!allocsys){
-		printf("GAH!");
-	}
 	fclose_ptr(root_ptr);
 	if(!allocsys) return 2;
 
@@ -841,6 +1091,13 @@ void set_terminal(void){
     tcsetattr(STDIN_FILENO, TCSANOW, &old_tio);
 }
 int main(int argc,char* argv[]){
+	memory=malloc(1000000000);
+	alloc_map_startoff[0]+=(dword)memory;
+	alloc_map_startoff[1]+=(dword)memory;
+	if(!memory){
+		printf("Unable to allocate enough memory!");
+		return 5;
+	}
 	if(argc<=1){
 		printf("Please.\n");
 		return 1;
@@ -864,7 +1121,7 @@ int main(int argc,char* argv[]){
 	ACOS_FILE* rooty=get_root_pointer();
 
 	byte fileName[256];
-	byte input[128]={0};
+	byte input[128]={};
 	byte p=0;
 	ACOS_FILE* currentDir=rooty;
 	printf("\n> ");
@@ -878,11 +1135,11 @@ int main(int argc,char* argv[]){
 		}else if(c=='\n'){
 			for(p=0;p<128;p++) input[p]=(input[p]==' ')?0:input[p];
 			p=0;
-			while(input[p]!=0) p++;
-			while(input[p]==0) p++;
+			while(p<128&&input[p]!=0) p++;
+			while(p<128&&input[p]==0) p++;
 			dword p2=p;
-			while(input[p2]!=0) p2++;
-			while(input[p2]==0) p2++;
+			while(p2<128&&input[p2]!=0) p2++;
+			while(p2<128&&input[p2]==0) p2++;
 
 			if(!strcmp(input,"ls")){
 				printf("There are ");
@@ -1057,6 +1314,7 @@ int main(int argc,char* argv[]){
 					overwrite_file(acos_file,st.st_size,buffer);
 					fclose_ptr(acos_file);
 					fclose(file);
+					free(buffer);
 				}
 			}else printf("\eCqrg;Unknown command!\eCF;");
 
