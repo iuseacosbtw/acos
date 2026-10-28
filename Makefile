@@ -3,7 +3,7 @@ AS = nasm
 LD = ld
 OBJCOPY = objcopy
 
-CFLAGS = -I./include -Os -Wno-pointer-sign --target=i686-elf -march=i686 -mno-sse -mno-sse2 -ffreestanding -fno-pie -fno-stack-protector -fno-builtin
+CFLAGS = -I./include -Os -Wno-pointer-sign --target=i686-elf -march=i386 -mno-sse -mno-sse2 -ffreestanding -fno-pie -fno-stack-protector -fno-builtin
 ASFLAGS = -f elf32
 LDFLAGS = -m elf_i386 -T linker.ld
 

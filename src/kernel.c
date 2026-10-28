@@ -199,7 +199,9 @@ typedef struct{
 	pid parent;
 	proc_gdt segments;
 	FILE** files;
-	byte** allocations;
+	region* heap;
+	region* anti_heap;
+
 	byte flags;
 	/* flags;
 	 * 7-4: Reserved
@@ -401,49 +403,118 @@ void free(dword ptr,dword size){
 	alloc_map[i+1]=size;
 }
 
-/*byte* allocate_prog(pid proc,dword size){
-	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
+void* allocate_prog(pid proc,dword size){
+	if(size==0)
+		return 0;
 	dword gdt_start;
 	dword gdt_size;
 	byte gdt_type;
 	extract_gdt_entry(processes[proc].segments.data,&gdt_start,&gdt_size,&gdt_type);
-	byte* ret=(byte*)reallocate(gdt_start,gdt_size*PAGE_SIZE,(gdt_size+size)*PAGE_SIZE);
 
-	dword proc_size=((dword)(processes[proc].segments.data.flags&0x0F)<<16)|processes[proc].segments.data.lim_low;
-	proc_size+=size;
-	processes[proc].segments.data.lim_low=proc_size;
-	proc_size=(byte)(proc_size>>16&0x0F);
-	processes[proc].segments.data.flags|=proc_size;
-	processes[proc].segments.data.flags&=proc_size|0xF0;
+	byte region_found=0;
+	dword heap_des;
+	for(dword i=0;i<HEAP_ARRAY_SIZE;i++){
+		if(processes[proc].heap[i].size==0){ // unused heap pointer
+			region_found=1;
+			heap_des=i;
+			break;
+		}
+	}
+	if(!region_found) // no unused heap pointer found
+		return 0;
 
+	region_found=0;
+	dword free_des;
+	for(dword i=0;i<HEAP_ARRAY_SIZE;i++){
+		if(processes[proc].anti_heap[i].size>=size){ // sufficient anti-heap region
+			region_found|=0x1;
+			free_des=i;
+			break;
+		}
+		if(!(region_found&0x2)&&processes[proc].anti_heap[i].size==0){
+			region_found|=0x2;
+			free_des=i;
+		}
+	}
+	if(region_found&0x1){ // no need to expand heap to make space
+		processes[proc].heap[heap_des].ptr=processes[proc].anti_heap[free_des].ptr;
+		processes[proc].heap[heap_des].size=size;
+		processes[proc].anti_heap[free_des].ptr+=size;
+		processes[proc].anti_heap[free_des].size-=size;
+
+		return processes[proc].heap[heap_des].ptr;
+	}
+	// must expand heap to make space
+	if(!(region_found&0x2)){
+		if(current_pid==proc) exit(0x10000000|ENOMEM);
+		else kill_program(proc,0xFF);
+		return 0;
+	}
+
+	dword page_size=(size+PAGE_SIZE-1)/PAGE_SIZE;
+	dword old_gdt_start=gdt_start;
+	gdt_start=reallocate(gdt_start,gdt_size*PAGE_SIZE,(gdt_size+page_size)*PAGE_SIZE);
+	void* ret=(void*)(gdt_size*PAGE_SIZE);
+	processes[proc].heap[heap_des].ptr=ret;
+	processes[proc].heap[heap_des].size=size;
+	processes[proc].anti_heap[free_des].ptr=ret+size;
+	processes[proc].anti_heap[free_des].size=page_size-size;
+
+	processes[proc].segments.stack=create_user_gdt_entry(gdt_start,gdt_size,gdt_type);
+	gdt_size+=page_size;
+	processes[proc].segments.data=create_user_gdt_entry(gdt_start,gdt_size,gdt_type);
+	if(old_gdt_start!=gdt_start){
+		{
+			dword d1;
+			extract_gdt_entry(processes[proc].segments.exec,&d1,&gdt_size,&gdt_type);
+		}
+		processes[proc].segments.exec=create_user_gdt_entry(gdt_start,gdt_size,gdt_type);
+	}
 	if(proc==current_pid)
 		reload_gdt(&processes[current_pid].segments);
 
 	return ret;
-}*/
-/*void free_prog(pid proc,byte* ptr){
-	size=(size+PAGE_SIZE-1)/PAGE_SIZE;
-	dword proc_size=((dword)(processes[proc].segments.data.flags&0x0F)<<16)|processes[proc].segments.data.lim_low;
-	dword real_size=proc_size*PAGE_SIZE;
-
-	if(size==0||start>=real_size) return real_size;
-	size=(start+size>real_size)?real_size-start:size;
-	byte* allocation=(byte*)allocate(real_size);
-	if(!allocation) return 0;
-	if(!read_file(file,0,real_size,allocation)){
-		free((dword)allocation,real_size);
-		return 0;
+}
+byte free_prog(pid proc,void* ptr){
+	byte region_found=0;
+	dword heap_des;
+	for(dword i=0;i<HEAP_ARRAY_SIZE;i++){
+		if(processes[proc].heap[i].ptr==ptr){
+			region_found=1;
+			heap_des=i;
+			break;
+		}
 	}
+	if(!region_found) // pointer doesn't exist
+		return 0;
 
-	proc_size+=size;
-	processes[proc].segments.data.lim_low=proc_size;
-	proc_size=(byte)(proc_size>>16&0x0F);
-	processes[proc].segments.data.flags|=proc_size;
-	processes[proc].segments.data.flags&=proc_size|0xF0;
-
-	if(proc==current_pid)
-		reload_gdt(&processes[current_pid].segments);
-}*/
+	region_found=0;
+	dword free_des;
+	for(dword i=0;i<HEAP_ARRAY_SIZE;i++){
+		dword p=(dword)(processes[proc].anti_heap[i].ptr);
+		dword s=processes[proc].anti_heap[i].size;
+		if(p+s==(dword)ptr){ // free region is before
+			region_found|=0x1;
+			free_des=i;
+			break;
+		}
+		if(s==0){
+			region_found|=0x2;
+			free_des=i;
+		}
+	}
+	if(region_found&0x1){ // expand existing anti-heap region
+		processes[proc].anti_heap[free_des].size+=processes[proc].heap[heap_des].size;
+		processes[proc].heap[heap_des].size=0;
+		return 1;
+	}else if(region_found&0x2){
+		processes[proc].anti_heap[free_des].ptr=processes[proc].heap[heap_des].ptr;
+		processes[proc].anti_heap[free_des].size=processes[proc].heap[heap_des].size;
+		processes[proc].heap[heap_des].size=0;
+		return 1;
+	}
+	return 0;
+}
 
 
 byte schedule_program(proc_gdt segments,pid* result_pid){
@@ -500,13 +571,13 @@ byte schedule_program(proc_gdt segments,pid* result_pid){
 	};
 	tasks[new_pid]=state;
 
-	FILE** files=(FILE**)allocate(FILE_ARRAY_SIZE*sizeof(FILE*));
-
 	process proc={
 		0,
 		current_pid,
 		segments,
-		files,
+		(FILE**)allocate(FILE_ARRAY_SIZE*sizeof(FILE*)),
+		(region*)allocate(HEAP_ARRAY_SIZE*sizeof(region)),
+		(region*)allocate(HEAP_ARRAY_SIZE*sizeof(region)),
 		0
 	};
 	processes[new_pid]=proc;
@@ -629,10 +700,9 @@ pid exec_file(FILE* file){
 	// allocate() can't possibly fail. if it does, that's handled specially,
 	// and the caller never sees that it failed
 	if(!read_file(file,4,code_size,(byte*)mem)){
-		free(mem,size);
+		free(mem,code_size+STACK_SIZE);
 		return 0;
 	}
-	dword stack=allocate(STACK_SIZE);
 
 	gdt_entry code_gdt=create_user_gdt_entry(mem,code_size/PAGE_SIZE,GDT_ENTRY_TYPE_EXEC);
 	gdt_entry data_gdt=create_user_gdt_entry(mem,(code_size+STACK_SIZE)/PAGE_SIZE,GDT_ENTRY_TYPE_DATA);
@@ -743,9 +813,7 @@ void system_init(void){
 
 
 	printf("Filesystem");
-	byte in=file_init();
-	printd(in);
-	if(in){
+	if(file_init()){
 		printf(" [\eCQqrg;ACTION REQUIRED\eCF;]\n\n\eCrgb;This computer appears to not have an ACOS filesystem!\nYou have a few options:\n");
 		byte selection=0;
 		while(selection<0x80){
@@ -1133,7 +1201,7 @@ _Noreturn void exception_handler(byte type,dword addr,dword cs){
 			for(;;);
 		}else{
 			if(type==0xD&&*(byte*)addr==0x65)
-				exit(addr); // GS fault, ultimately caused by the program, not the kernel
+				exit(0x20000000|addr); // GS fault, ultimately caused by the program, not the kernel
 
 			panic("Your computer suffered an unrecoverable error and needs to shut down!\n");
 			switch(type){
@@ -1219,7 +1287,7 @@ _Noreturn void exception_handler(byte type,dword addr,dword cs){
 			}
 			kinf_loop();
 		}
-	}else exit(-type);
+	}else exit(-(dword)type);
 }
 
 extern byte G_Keyboard_KeyFlags;
@@ -1387,6 +1455,10 @@ dword kos_handler(dword function,dword args[4]){
 			break;
 		case 33:
 			return proc_getFlags(current_pid);
+		case 34:
+			return (dword)allocate_prog(current_pid,a);
+		case 35:
+			return free_prog(current_pid,(void*)a);
 
 		default: return EINVALID;
 	}

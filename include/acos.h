@@ -6,6 +6,10 @@
 typedef uint8_t byte;
 typedef uint16_t word;
 typedef uint32_t dword;
+typedef struct{
+	void* ptr;
+	dword size;
+}__attribute((packed)) region;
 
 typedef dword pid;
 #define SEG_GS __attribute__((address_space(256)))
@@ -73,6 +77,8 @@ dword allocate(dword size);
 dword allocate_aligned(dword size,word alignment);
 dword reallocate(dword ptr,dword size,dword new_size);
 void free(dword ptr,dword size);
+_Noreturn void exit(dword code);
+char kill_program(pid program,byte urgent);
 byte proc_getFlags(pid proc);
 
 typedef struct{
@@ -88,6 +94,7 @@ typedef struct{
 // I know, I know. This isn't in file.h because of the proc_getFiles() function
 FILE** proc_getFiles(pid proc);
 #define PAGE_SIZE 4096
-#define FILE_ARRAY_SIZE (PAGE_SIZE/sizeof(FILE*))
+#define FILE_ARRAY_SIZE 1024
+#define HEAP_ARRAY_SIZE 1024
 
 #endif

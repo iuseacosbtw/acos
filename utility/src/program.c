@@ -112,25 +112,16 @@ void main(){
 					if(file&&(fget_flags(file)&F_TYPE)==F_TYPE_FILE){
 						unsigned int size=fget_size(file);
 						fget_name(file,fileName);
-						if(size>2048){
-							printc('\'');
+						char* buffer=alloc(size);
+						if(fread(file,0,size,buffer))
+							for(unsigned int i=0;i<size;i++)
+								printc(buffer[i]);
+						else{
+							printf("Unable to read '");
 							printf(fileName);
-							printf("' is too large to read! (");
-							printn(size);
-							printc('>');
-							printn(2048);
-							printc(')');
-						}else{
-							char buffer[size];
-							if(fread(file,0,size,buffer))
-								for(unsigned int i=0;i<size;i++)
-									printc(buffer[i]);
-							else{
-								printf("Unable to read '");
-								printf(fileName);
-								printf("'.");
-							}
+							printf("'.");
 						}
+						free(buffer);
 						fclose(file);
 					}else printf("Not a readable file.");
 				}
@@ -180,7 +171,7 @@ void main(){
 					if(!valid)
 						printf("Invalid number");
 					else{
-						if(pkill(num,1)){
+						if(pkill(num,1)>0){
 							printf("Process ");
 							printn(num);
 							printf(" was successfully terminated.");

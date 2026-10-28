@@ -500,5 +500,42 @@ static inline char beep(unsigned short frequency,unsigned short time){
 	);
 	return ret;
 }
+static inline unsigned int pget_flags(void){
+	unsigned int ret;
+	__asm__ volatile(
+		"movl $33,%%eax\n"
+		"int $0x30\n"
+		: "=a" (ret)
+		:
+		:
+	);
+	return ret;
+}
+static inline void* alloc(unsigned int size){
+	void* ret;
+	__asm__ volatile(
+		"pushl %1\n"
+		"movl $34,%%eax\n"
+		"int $0x30\n"
+		"addl $4,%%esp"
+		: "=a" (ret)
+		: "g" (size)
+		:
+	);
+	return ret;
+}
+static inline char free(void* ptr){
+	char ret;
+	__asm__ volatile(
+		"pushl %1\n"
+		"movl $35,%%eax\n"
+		"int $0x30\n"
+		"addl $4,%%esp"
+		: "=a" (ret)
+		: "g" (ptr)
+		:
+	);
+	return ret;
+}
 
 #endif

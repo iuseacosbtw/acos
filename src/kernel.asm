@@ -1493,18 +1493,31 @@ IRET
 global test_program:
 test_program:
 
-;PUSH DWORD test_str-test_program ; print
-;MOV EAX,4
-;INT 0x30
+PUSH DWORD 10 ; allocate
+MOV EAX,34
+INT 0x30
+ADD ESP,4
 
-PUSH DWORD 0x00434241
-PUSH ESP
-MOV EAX,4
+MOV EBX,EAX
+MOV DWORD [EBX],0xDEADBEEF
+
+PUSH EBX ; printd
+MOV EAX,7
+INT 0x30
+
+MOV EAX,11 ; getchar
+INT 0x30
+
+PUSH EBX ; free
+MOV EAX,35
+INT 0x30
+
+PUSH EAX ; printh
+MOV EAX,5
 INT 0x30
 
 JMP $
 
-;test_str: db "Test",0
 global test_program_end
 test_program_end:
 
